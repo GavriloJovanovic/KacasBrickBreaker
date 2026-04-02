@@ -105,9 +105,10 @@ class Ball:
             self.x = float(VIRTUAL_W - r)
             self.dx = -abs(self.dx)
 
-        # Top wall
-        if self.y - r < 0:
-            self.y = float(r)
+        # Top wall — bounce at the bottom edge of the HUD bar (y=50)
+        TOP_WALL = 50
+        if self.y - r < TOP_WALL:
+            self.y = float(TOP_WALL + r)
             self.dy = abs(self.dy)
 
         # Bottom — fell off screen
