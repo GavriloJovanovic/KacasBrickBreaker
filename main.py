@@ -1,29 +1,82 @@
+"""
+KacasBrickBreaker — entry point.
+
+Owns:
+  - the pygame display (real screen surface)
+  - the 800x600 virtual canvas (all drawing happens here, then scaled)
+  - the top-level state machine: MENU | SETTINGS | GAME (phases 3-4)
+  - F11 global fullscreen toggle
+"""
 import sys
 import os
-import pygame
-from settings import Settings
 
-# Virtual canvas — all game logic uses this fixed resolution
+import pygame
+
+from settings        import Settings
+from menu            import MenuScreen
+from settings_screen import SettingsScreen
+
+# ------------------------------------------------------------------ #
+# Constants                                                           #
+# ------------------------------------------------------------------ #
 VIRTUAL_W = 800
 VIRTUAL_H = 600
-TITLE = "KacasBrickBreaker"
-FPS = 60
+TITLE     = "KacasBrickBreaker"
+FPS       = 60
 
+
+# ------------------------------------------------------------------ #
+# Helpers                                                             #
+# ------------------------------------------------------------------ #
 
 def make_screen(fullscreen: bool) -> pygame.Surface:
-    """Create and return the real pygame display surface."""
+    """Create (or recreate) the real display surface."""
     if fullscreen:
         return pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     return pygame.display.set_mode((VIRTUAL_W, VIRTUAL_H))
 
 
+def load_background() -> pygame.Surface:
+    """Load and scale background.jpg to the virtual canvas size once."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "background.jpg")
+    raw  = pygame.image.load(path).convert()
+    return pygame.transform.scale(raw, (VIRTUAL_W, VIRTUAL_H))
+
+
 def ensure_scores_dir():
-    """Make sure scores/ folder and highscore.txt exist."""
+    """Guarantee scores/ folder and highscore.txt exist."""
     os.makedirs("scores", exist_ok=True)
     path = os.path.join("scores", "highscore.txt")
     if not os.path.exists(path):
         open(path, "w").close()
 
+
+def virtual_mouse(screen: pygame.Surface):
+    """
+    Map the real mouse position to virtual 800x600 coordinates.
+    Required in fullscreen mode where the real resolution differs.
+    """
+    mx, my  = pygame.mouse.get_pos()
+    rw, rh  = screen.get_size()
+    return (mx * VIRTUAL_W // rw, my * VIRTUAL_H // rh)
+
+
+def blit_virtual(screen: pygame.Surface, virtual: pygame.Surface):
+    """Scale virtual canvas to the real screen and flip."""
+    rw, rh = screen.get_size()
+    if (rw, rh) == (VIRTUAL_W, VIRTUAL_H):
+        screen.blit(virtual, (0, 0))
+    else:
+        # pygame.transform.scale (not smoothscale) preserves pixel art edges
+        scaled = pygame.transform.scale(virtual, (rw, rh))
+        screen.blit(scaled, (0, 0))
+    pygame.display.flip()
+
+
+# ------------------------------------------------------------------ #
+# Main                                                                #
+# ------------------------------------------------------------------ #
 
 def main():
     pygame.init()
@@ -34,48 +87,96 @@ def main():
 
     ensure_scores_dir()
 
-    screen = make_screen(settings.fullscreen)
-    # Virtual surface — everything is drawn here, then scaled to screen
+    screen  = make_screen(settings.fullscreen)
     virtual = pygame.Surface((VIRTUAL_W, VIRTUAL_H))
+    clock   = pygame.time.Clock()
 
-    clock = pygame.time.Clock()
+    # Load shared assets once
+    bg = load_background()
 
-    # ------------------------------------------------------------------ #
-    # Placeholder game loop — will be replaced by the state machine       #
-    # in Phase 2 when menu.py / game.py are introduced                    #
-    # ------------------------------------------------------------------ #
-    font = pygame.font.SysFont("Courier", 28, bold=True)
+    # Screens
+    menu_screen     = MenuScreen(settings, bg)
+    settings_screen = SettingsScreen(settings, bg)
 
+    # State machine
+    # Valid states: "menu" | "settings" | "game"
+    # "game" will be implemented in Phase 3-4
+    state   = "menu"
     running = True
+
+    # Placeholder font for the game stub (removed in Phase 4)
+    _stub_font = None
+
     while running:
+        vm = virtual_mouse(screen)   # Virtual mouse coords this frame
+
+        # ---------------------------------------------------------- #
+        # Event handling                                              #
+        # ---------------------------------------------------------- #
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+                continue
 
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+            # Global F11 toggle — works from any screen
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                settings.fullscreen = not settings.fullscreen
+                settings.save()
+                screen = make_screen(settings.fullscreen)
+                continue
+
+            # Delegate to the active screen
+            if state == "menu":
+                action = menu_screen.handle_event(event, vm)
+                if action == "start":
+                    state = "game"
+                elif action == "settings":
+                    state = "settings"
+                elif action == "exit":
                     running = False
 
-                elif event.key == pygame.K_F11:
-                    # Toggle fullscreen
-                    settings.fullscreen = not settings.fullscreen
-                    settings.save()
+            elif state == "settings":
+                action = settings_screen.handle_event(event, vm)
+                if action == "back":
+                    state = "menu"
+                elif action == "display_changed":
+                    # Fullscreen flag already toggled + saved inside SettingsScreen
                     screen = make_screen(settings.fullscreen)
 
-        # Draw to virtual surface
-        virtual.fill((10, 14, 42))  # Dark navy #0A0E2A
-        msg = font.render("Phase 1 OK — press ESC to quit, F11 = fullscreen", True, (255, 255, 255))
-        virtual.blit(msg, (VIRTUAL_W // 2 - msg.get_width() // 2, VIRTUAL_H // 2 - msg.get_height() // 2))
+            elif state == "game":
+                # ESC from the game stub returns to menu
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    state = "menu"
 
-        # Scale virtual surface to real screen and present
-        real_w, real_h = screen.get_size()
-        if (real_w, real_h) == (VIRTUAL_W, VIRTUAL_H):
-            screen.blit(virtual, (0, 0))
-        else:
-            scaled = pygame.transform.scale(virtual, (real_w, real_h))
-            screen.blit(scaled, (0, 0))
+        # ---------------------------------------------------------- #
+        # Drawing                                                     #
+        # ---------------------------------------------------------- #
+        virtual.fill((10, 14, 42))   # Base clear — dark navy
 
-        pygame.display.flip()
+        if state == "menu":
+            menu_screen.draw(virtual, vm)
+
+        elif state == "settings":
+            settings_screen.draw(virtual, vm)
+
+        elif state == "game":
+            # ---- Placeholder — replaced in Phase 4 ----
+            if _stub_font is None:
+                _stub_font = pygame.font.SysFont("Courier New", 26, bold=True)
+            virtual.blit(bg, (0, 0))
+            lines = [
+                "GAME — coming in Phase 4",
+                "",
+                "Press ESC to return to menu",
+            ]
+            for i, line in enumerate(lines):
+                surf = _stub_font.render(line, False, (255, 255, 255))
+                virtual.blit(surf,
+                             (VIRTUAL_W // 2 - surf.get_width() // 2,
+                              VIRTUAL_H // 2 - 40 + i * 36))
+            # -------------------------------------------
+
+        blit_virtual(screen, virtual)
         clock.tick(FPS)
 
     settings.save()
