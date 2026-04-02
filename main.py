@@ -1,28 +1,24 @@
 """
 KacasBrickBreaker — entry point.
 
-Owns:
-  - the pygame display (real screen surface)
-  - the 800x600 virtual canvas (all drawing happens here, then scaled)
-  - the top-level state machine: MENU | SETTINGS | GAME
-  - F11 global fullscreen toggle
-
-State transitions:
-  menu  → game      : START GAME button
-  menu  → settings  : SETTINGS button
-  settings → menu   : BACK / ESC
-  game  → menu      : ESC (paused → M) or game_over handled in Phase 5
-  game  → game_over : Phase 5 adds name-input flow
+State machine:
+  menu → game → name_input → leaderboard → menu
+       → settings → menu
+  game → menu  (pause → M, or ESC from waiting)
+  game → leaderboard (game over, score too low for top 10)
 """
 import sys
 import os
 
 import pygame
 
-from settings        import Settings
-from menu            import MenuScreen
-from settings_screen import SettingsScreen
-from game            import Game
+from settings          import Settings
+from menu              import MenuScreen
+from settings_screen   import SettingsScreen
+from game              import Game
+from name_input        import NameInputScreen
+from leaderboard_screen import LeaderboardScreen
+import scoreboard
 
 # ------------------------------------------------------------------ #
 # Constants                                                           #
@@ -57,7 +53,6 @@ def ensure_scores_dir():
 
 
 def virtual_mouse(screen: pygame.Surface) -> tuple[int, int]:
-    """Map real screen mouse pos → virtual 800x600 coordinates."""
     mx, my = pygame.mouse.get_pos()
     rw, rh = screen.get_size()
     return (mx * VIRTUAL_W // rw, my * VIRTUAL_H // rh)
@@ -90,13 +85,14 @@ def main():
     virtual = pygame.Surface((VIRTUAL_W, VIRTUAL_H))
     clock   = pygame.time.Clock()
 
-    # Load shared assets once
     bg = load_background()
 
-    # Build screens
-    menu_screen     = MenuScreen(settings, bg)
-    settings_screen = SettingsScreen(settings, bg)
-    game_screen     = Game(settings, bg)
+    # Build all screens once — reused for the whole session
+    menu_screen        = MenuScreen(settings, bg)
+    settings_screen    = SettingsScreen(settings, bg)
+    game_screen        = Game(settings, bg)
+    name_input_screen  = NameInputScreen(bg)
+    leaderboard_screen = LeaderboardScreen(bg)
 
     state   = "menu"
     running = True
@@ -106,14 +102,14 @@ def main():
         vm         = virtual_mouse(screen)
 
         # ---------------------------------------------------------- #
-        # Event handling                                              #
+        # Events                                                      #
         # ---------------------------------------------------------- #
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
                 continue
 
-            # Global F11 toggle — any screen
+            # Global F11 — any screen
             if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
                 settings.fullscreen = not settings.fullscreen
                 settings.save()
@@ -124,8 +120,8 @@ def main():
             if state == "menu":
                 action = menu_screen.handle_event(event, vm)
                 if action == "start":
-                    state = "game"
                     game_screen.new_game(current_ms)
+                    state = "game"
                 elif action == "settings":
                     state = "settings"
                 elif action == "exit":
@@ -145,15 +141,41 @@ def main():
                 if action == "menu":
                     state = "menu"
                 elif action == "game_over":
-                    # Phase 5 will insert name-input / leaderboard here.
-                    # For now: return to menu.
+                    final_score = game_screen.score
+                    if scoreboard.qualifies(final_score):
+                        name_input_screen.reset(final_score)
+                        state = "name_input"
+                    else:
+                        leaderboard_screen.load(highlight_rank=None)
+                        state = "leaderboard"
+
+            # ---- NAME INPUT ----
+            elif state == "name_input":
+                action = name_input_screen.handle_event(event)
+                if action == "confirm":
+                    rank = scoreboard.save_score(
+                        name_input_screen.name,
+                        name_input_screen.score,
+                    )
+                    leaderboard_screen.load(highlight_rank=rank)
+                    state = "leaderboard"
+                elif action == "skip":
+                    leaderboard_screen.load(highlight_rank=None)
+                    state = "leaderboard"
+
+            # ---- LEADERBOARD ----
+            elif state == "leaderboard":
+                action = leaderboard_screen.handle_event(event)
+                if action == "menu":
                     state = "menu"
 
         # ---------------------------------------------------------- #
-        # Update (logic — runs once per frame, outside event loop)    #
+        # Update (logic)                                              #
         # ---------------------------------------------------------- #
         if state == "game":
             game_screen.update(current_ms, vm)
+        elif state == "name_input":
+            name_input_screen.update(current_ms)
 
         # ---------------------------------------------------------- #
         # Draw                                                        #
@@ -166,6 +188,10 @@ def main():
             settings_screen.draw(virtual, vm)
         elif state == "game":
             game_screen.draw(virtual, vm)
+        elif state == "name_input":
+            name_input_screen.draw(virtual)
+        elif state == "leaderboard":
+            leaderboard_screen.draw(virtual)
 
         blit_virtual(screen, virtual)
         clock.tick(FPS)
